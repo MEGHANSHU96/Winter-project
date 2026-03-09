@@ -10,7 +10,7 @@ from groq import Groq
 
 # --- CONFIGURATION ---
 # Paste your Groq API key between the quotes below
-GROQ_API_KEY = "gsk_uO5uUMUIr7kenz7rSgzNWGdyb3FYzCw5a4AqIZYjs6ysAiNQH" 
+GROQ_API_KEY = "gsk_uO5uUMUIr7kenz7rSgzNWGdyb3FYzCw5a4AqIZYjs6ysAiNQHfZ" 
 
 DISEASES = [
     "perihilar_infiltrate", "pneumonia", "bronchitis", "interstitial",
@@ -44,22 +44,102 @@ def build_batch_labeling_prompt(reports, diseases):
         )
 
     return f"""
-Act as a board-certified veterinary radiologist. Perform a batch binary classification.
-OBJECTIVE: Classify each disease as "Normal" or "Abnormal".
+### ROLE
+You are a Board-Certified Veterinary Radiologist. Your task is to perform a batch binary classification of veterinary thoracic radiology reports with high diagnostic precision.
 
-TARGET DISEASES:
+### TASK
+For EACH report, classify the target diseases as "Normal" or "Abnormal" based strictly on the provided radiological evidence. 
+
+Each report contains three sections: `Findings`, `Conclusions`, and `Recommendations`.
+1. Look primarily at the **Findings** for objective radiological signs (patterns, opacities, measurements).
+2. Look at the **Conclusions** for explicit diagnoses made by the attending radiologist.
+3. Use **Recommendations** only for context (e.g., "treat for pneumonia" implies pneumonia is Abnormal).
+
+### RADIOLOGICAL CLASSIFICATION CRITERIA
+Classify as **Abnormal** if the report describes the following specific findings:
+
+* **perihilar_infiltrate**: Opacity, interstitial patterns, or soft tissue thickening specifically around the lung hilum.
+* **Pneumonia**: Evidence of consolidation, alveolar infiltrates, air bronchograms, or lobar opacity. *(Note: Do not classify mild interstitial patterns as Pneumonia unless consolidation is mentioned).*
+* **Bronchitis**: Visible bronchial wall thickening ("donuts" or "tram lines"), distinct bronchial patterns, or airway inflammation.
+* **diseased_lungs**: Any general statement describing an abnormal lung parenchymal condition not covered by other specific labels.
+* **Interstitial disease**: Diffuse or structured interstitial patterns, reticular patterns, or generalized increased lung opacity.
+* **Pleural effusion**: Evidence of fluid in the pleural space, fissure lines, blunting of costophrenic angles, or lung lobe retraction.
+* **rtm**: Any specific abnormality noted in the Right Middle Lung Lobe.
+* **focal_caudodorsal_lung**: A focal lesion, opacity, or mass specifically in the caudodorsal lung region.
+* **focal_perihilar**: A localized abnormality specifically near the lung hilum.
+* **Cardiomegaly**: Enlarged cardiac silhouette, increased vertebral heart score (VHS), widened cardiac shadow, or loss of the cranial/caudal waist.
+* **Pulmonary abnormalities**: Presence of nodules, masses, infiltrates, or any abnormal lung opacity.
+* **Thoracic lymph nodes**: Evidence of enlarged lymph nodes or mediastinal lymphadenopathy.
+* **Esophagitis**: Findings of esophageal wall thickening, esophageal inflammation, or a dilated/abnormal esophagus.
+
+### UNCERTAINTY & INFERENCE RULES
+* **Evidence-Based**: Do NOT infer a disease if there is no supporting radiological sign in the Findings or Conclusions.
+* **Normal**: The disease is explicitly ruled out OR there is a total absence of evidence in the text.
+
+### TARGET DISEASES
 [{disease_list_str}]
 
-REPORTS:
+### RADIOLOGY REPORTS
+{report_blocks}
+(Note to LLM: Each block will contain CaseID, Findings, Conclusions, and Recommendations)
+
+### OUTPUT REQUIREMENTS
+Return ONLY a valid JSON array of objects. Do not include markdown formatting or conversational text outside the JSON.
+IMPORTANT NOTES
+----------------------------------------
+
+• Absence of a disease name does NOT mean Normal.
+• Many diseases must be inferred from radiologic signs.
+• Be conservative but detect subtle abnormalities.
+
+
+UNCERTAINTY HANDLING SHOULD BE DONE VERY CARFULL USING THE MODEL KNOWLEDGE OF RADIOLOGY REPORTS LIKE A DOCTOR.
+
+## STRICT EVIDENCE RULE
+
+Primary Directive: Do NOT classify as 'Abnormal' based on minor, incidental, or non-specific findings that the radiologist notes as clinically insignificant.
+
+Threshold for Abnormal: Only classify as 'Abnormal' if there is a definitive diagnostic statement or clear radiological markers.
+
+Ambiguity Handling: If the report uses terms like 'possible,' 'differential includes,' or 'cannot rule out' WITHOUT supporting visual evidence in the Findings section, default to Normal."
+
+
+
+TARGET DISEASES
+[{disease_list_str}]
+
+RADIOLOGY REPORTS
 {"".join(report_blocks)}
 
-LOGIC:
-- Abnormal: Mentions of pathology, "cannot rule out", or "suggestive of".
-- Normal: Stated unremarkable, no evidence, or not mentioned at all.
+OUTPUT REQUIREMENTS
 
-OUTPUT:
-Return ONLY a raw JSON array of objects. Each object must have "report_id" and the disease keys.
-No markdown, no talk.
+Return ONLY a valid JSON array.
+
+Each object must contain:
+• "report_id"
+• one key for each disease
+
+Each disease must have ONLY one value:
+"Normal" or "Abnormal"
+
+OUTPUT FORMAT EXAMPLE
+
+[
+  {{
+    "report_id": 1,
+    "perihilar_infiltrate": "Normal",
+    "pneumonia": "Abnormal",
+    "bronchitis": "Normal"
+  }},
+  {{
+    "report_id": 2,
+    "perihilar_infiltrate": "Normal",
+    "pneumonia": "Normal",
+    "bronchitis": "Normal"
+  }}
+]
+
+
 """.strip()
 
 def call_groq_batch(client, model_name, prompt, max_retries=2):
@@ -81,7 +161,7 @@ def call_groq_batch(client, model_name, prompt, max_retries=2):
             time.sleep(2)
     return None
 
-def label_reports_from_excel(excel_path: Path, client: Groq, model_name: str, diseases, batch_size: int = 5):
+def label_reports_from_excel(excel_path: Path, client: Groq, model_name: str, diseases, batch_size: int = 3):
     df = pd.read_excel(excel_path)
     
     # Precise Column Mapping
@@ -90,7 +170,7 @@ def label_reports_from_excel(excel_path: Path, client: Groq, model_name: str, di
     col_recom = "Recommendations (original radiologist report)"
 
     for d in diseases:
-        df[d] = None
+        df[d] = None 
 
     for start in range(0, len(df), batch_size):
         end = min(start + batch_size, len(df))
@@ -172,7 +252,7 @@ def main():
 
     groq_client = Groq(api_key=api_key)
     # Most powerful versatile model on Groq currently
-    groq_model = "openai/gpt-oss-120b" 
+    groq_model = "llama-3.3-70b-versatile" 
 
     # 1. Labeling
     input_path = get_excel_file_path("Path to INPUT Excel: ")
